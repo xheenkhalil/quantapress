@@ -32,6 +32,14 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { Category } from '@/types/cms';
 
 export default function PostsPage() {
   const [posts, setPosts] = useState<Post[]>([]);
@@ -40,28 +48,53 @@ export default function PostsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState("all");
 
+  // Quick Edit State
+  const [quickEditOpen, setQuickEditOpen] = useState(false);
+  const [quickEditPost, setQuickEditPost] = useState<Post | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editSlug, setEditSlug] = useState('');
+  const [editStatus, setEditStatus] = useState<'draft' | 'published' | 'archived'>('draft');
+  const [editCategories, setEditCategories] = useState<string[]>([]);
+  
+  // Data
+  const [allCategories, setAllCategories] = useState<Category[]>([]);
+
   // Delete Dialog State
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [postToDelete, setPostToDelete] = useState<string | null>(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
 
-  // 1. Fetch Posts
+  // 1. Fetch Posts & Categories
   useEffect(() => {
-    fetchPosts();
+    fetchData();
   }, []);
 
-  async function fetchPosts() {
+  async function fetchData() {
     setLoading(true);
+    
+    // Fetch Categories
+    const { data: catData } = await supabase.from('categories').select('*').order('name');
+    if (catData) setAllCategories(catData);
+
+    // Fetch Posts with joined Categories
+    // Note: We need to use proper join syntax. Supabase returns array of objects for joined relations.
     const { data, error } = await supabase
       .from('posts')
-      .select('*')
+      .select('*, categories:post_categories(id:category_id, categories(id, name, slug))')
       .order('updated_at', { ascending: false });
 
     if (error) {
         console.error('Error fetching posts:', error);
         toast.error('Failed to load posts');
     }
-    else setPosts(data as Post[]);
+    else {
+        // Transform data to match Post type structure (flatten the join)
+        const formattedPosts = data.map((p: any) => ({
+            ...p,
+            categories: p.categories.map((c: any) => c.categories).filter(Boolean)
+        }));
+        setPosts(formattedPosts as Post[]);
+    }
     setLoading(false);
   }
 
@@ -112,6 +145,62 @@ export default function PostsPage() {
     }
     setDeleteDialogOpen(false);
     setPostToDelete(null);
+  };
+
+  const handleQuickEditClick = (post: Post) => {
+    setQuickEditPost(post);
+    setEditTitle(post.title);
+    setEditSlug(post.slug);
+    setEditStatus(post.status);
+    setEditCategories(post.categories?.map(c => c.id) || []);
+    setQuickEditOpen(true);
+  };
+
+  const saveQuickEdit = async () => {
+    if (!quickEditPost) return;
+    
+    // 1. Update Post Metadata
+    const { error } = await supabase.from('posts').update({
+        title: editTitle,
+        slug: editSlug,
+        status: editStatus,
+        updated_at: new Date().toISOString()
+    }).eq('id', quickEditPost.id);
+
+    if (error) {
+        toast.error("Failed to update post: " + error.message);
+        return;
+    }
+
+    // 2. Update Categories (Full Replace)
+    // Delete existing
+    await supabase.from('post_categories').delete().eq('post_id', quickEditPost.id);
+    
+    // Insert new
+    if (editCategories.length > 0) {
+        const pcRows = editCategories.map(cid => ({ post_id: quickEditPost.id, category_id: cid }));
+        await supabase.from('post_categories').insert(pcRows);
+    }
+
+    toast.success("Quick Edit Saved");
+    
+    // 3. Update Local State
+    setPosts(posts.map(p => {
+        if (p.id === quickEditPost.id) {
+            // Find selected category objects
+            const newCats = allCategories.filter(c => editCategories.includes(c.id));
+            return { 
+                ...p, 
+                title: editTitle, 
+                slug: editSlug, 
+                status: editStatus,
+                categories: newCats,
+                updated_at: new Date().toISOString()
+            };
+        }
+        return p;
+    }));
+    setQuickEditOpen(false);
   };
 
   // Filter Logic
@@ -183,7 +272,7 @@ export default function PostsPage() {
               <div className="flex items-center gap-3 text-xs opacity-0 group-hover:opacity-100 transition-opacity duration-200 font-medium translate-y-1 group-hover:translate-y-0 text-slate-500">
                 <Link href={`/dashboard/posts/${post.id}`} className="text-maroon-700 hover:underline">Edit</Link>
                 <span className="text-slate-200">|</span>
-                <span className="cursor-not-allowed hover:text-slate-700">Quick Edit</span>
+                <button onClick={() => handleQuickEditClick(post)} className="text-slate-500 hover:text-maroon-700 hover:underline">Quick Edit</button>
                 <span className="text-slate-200">|</span>
                 <button onClick={() => handleDeleteClick(post.id)} className="text-red-600 hover:underline">Trash</button>
                 <span className="text-slate-200">|</span>
@@ -192,13 +281,27 @@ export default function PostsPage() {
             </div>
           </TableCell>
 
-          <TableCell className="text-slate-600">
-             {/* Placeholder for Author Name until we implement Auth Profiles */}
+           <TableCell className="text-slate-600">
              <div className="flex items-center gap-2">
                  <div className="h-6 w-6 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-500">A</div>
                  <span className="text-sm font-medium">Admin</span> 
              </div>
-          </TableCell>
+           </TableCell>
+
+           {/* AUTHORS */}
+           <TableCell>
+             <div className="flex gap-1 flex-wrap">
+               {post.categories && post.categories.length > 0 ? (
+                 post.categories.map(cat => (
+                   <Badge key={cat.id} variant="outline" className="text-xs font-normal text-slate-500 border-slate-200">
+                     {cat.name}
+                   </Badge>
+                 ))
+               ) : (
+                 <span className="text-xs text-slate-300 italic">Uncategorized</span>
+               )}
+             </div>
+           </TableCell>
 
           <TableCell>
             <Badge variant={post.status === 'published' ? 'default' : 'secondary'} className={
@@ -317,8 +420,9 @@ export default function PostsPage() {
                                 disabled={loading || displayPosts.length === 0}
                                 />
                             </TableHead>
-                            <TableHead className="w-[40%] font-semibold text-slate-700">Title</TableHead>
+                            <TableHead className="w-[35%] font-semibold text-slate-700">Title</TableHead>
                             <TableHead className="font-semibold text-slate-700">Author</TableHead>
+                            <TableHead className="font-semibold text-slate-700">Categories</TableHead>
                             <TableHead className="font-semibold text-slate-700">Status</TableHead>
                             <TableHead className="font-semibold text-slate-700">Date</TableHead>
                             <TableHead className="text-right pr-6 font-semibold text-slate-700">Actions</TableHead>
@@ -342,8 +446,9 @@ export default function PostsPage() {
                                 disabled={loading || displayPosts.length === 0}
                                 />
                             </TableHead>
-                            <TableHead className="w-[40%] font-semibold text-slate-700">Title</TableHead>
+                            <TableHead className="w-[35%] font-semibold text-slate-700">Title</TableHead>
                             <TableHead className="font-semibold text-slate-700">Author</TableHead>
+                            <TableHead className="font-semibold text-slate-700">Categories</TableHead>
                             <TableHead className="font-semibold text-slate-700">Status</TableHead>
                             <TableHead className="font-semibold text-slate-700">Date</TableHead>
                             <TableHead className="text-right pr-6 font-semibold text-slate-700">Actions</TableHead>
@@ -366,8 +471,9 @@ export default function PostsPage() {
                                 disabled={loading || displayPosts.length === 0}
                                 />
                             </TableHead>
-                            <TableHead className="w-[40%] font-semibold text-slate-700">Title</TableHead>
+                            <TableHead className="w-[35%] font-semibold text-slate-700">Title</TableHead>
                             <TableHead className="font-semibold text-slate-700">Author</TableHead>
+                            <TableHead className="font-semibold text-slate-700">Categories</TableHead>
                             <TableHead className="font-semibold text-slate-700">Status</TableHead>
                             <TableHead className="font-semibold text-slate-700">Date</TableHead>
                             <TableHead className="text-right pr-6 font-semibold text-slate-700">Actions</TableHead>
@@ -412,6 +518,90 @@ export default function PostsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* QUICK EDIT DIALOG */}
+      <Dialog open={quickEditOpen} onOpenChange={setQuickEditOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Quick Edit</DialogTitle>
+            <DialogDescription>
+              Update post details without loading the full editor.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="grid gap-4 py-4">
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="title" className="text-right">
+                Title
+              </Label>
+              <Input
+                id="title"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="col-span-3"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="slug" className="text-right">
+                Slug
+              </Label>
+              <Input
+                id="slug"
+                value={editSlug}
+                onChange={(e) => setEditSlug(e.target.value)}
+                className="col-span-3 font-mono text-xs"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="status" className="text-right">
+                Status
+              </Label>
+              <div className="col-span-3">
+                 <Select value={editStatus} onValueChange={(val: any) => setEditStatus(val)}>
+                    <SelectTrigger>
+                        <SelectValue placeholder="Select status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="draft">Draft</SelectItem>
+                        <SelectItem value="published">Published</SelectItem>
+                        <SelectItem value="archived">Archived</SelectItem>
+                    </SelectContent>
+                 </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-4 items-start gap-4">
+              <Label className="text-right pt-2">
+                Categories
+              </Label>
+              <div className="col-span-3 flex flex-col gap-2 max-h-[150px] overflow-y-auto border rounded-md p-2">
+                 {allCategories.map(cat => (
+                     <div key={cat.id} className="flex items-center space-x-2">
+                        <Checkbox 
+                            id={`cat-${cat.id}`} 
+                            checked={editCategories.includes(cat.id)}
+                            onCheckedChange={(checked) => {
+                                if (checked) setEditCategories([...editCategories, cat.id]);
+                                else setEditCategories(editCategories.filter(id => id !== cat.id));
+                            }}
+                        />
+                        <label
+                            htmlFor={`cat-${cat.id}`}
+                            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                        >
+                            {cat.name}
+                        </label>
+                     </div>
+                 ))}
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQuickEditOpen(false)}>Cancel</Button>
+            <Button onClick={saveQuickEdit} className="bg-maroon-700 hover:bg-maroon-800">Save Changes</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

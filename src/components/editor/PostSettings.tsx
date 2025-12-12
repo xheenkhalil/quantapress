@@ -8,14 +8,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge"; // You might need to install this: npx shadcn@latest add badge
-import { Settings, Image as ImageIcon, Globe, FileText, ImageIcon as MediaIcon, X, Tag, Sparkles, Save, Loader2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge"; 
+import { Checkbox } from "@/components/ui/checkbox";
+import { Settings, Image as ImageIcon, Globe, FileText, ImageIcon as MediaIcon, X, Tag, Sparkles, Save, Loader2, Folder, Plus } from "lucide-react";
 import MediaLibrary from "@/components/media/MediaLibrary";
 import { MediaAsset } from "@/types/cms";
 
+// Simplified Type for UI
+export type CategoryOption = { id: string; name: string; };
+
 interface PostSettingsProps {
   // Metadata
-  title: string; // Needed for Auto-SEO
+  title: string; 
   slug: string; setSlug: (s: string) => void;
   excerpt: string; setExcerpt: (s: string) => void;
   seoTitle: string; setSeoTitle: (s: string) => void;
@@ -29,7 +33,13 @@ interface PostSettingsProps {
   tags: string[];
   setTags: (tags: string[]) => void;
 
-  // Actions (New)
+  // Categories (New)
+  categories: CategoryOption[]; // All available
+  selectedCategories: string[]; // IDs
+  setSelectedCategories: (ids: string[]) => void;
+  onCreateCategory: (name: string) => Promise<void>;
+
+  // Actions
   onSave: () => void;
   saving: boolean;
 }
@@ -38,11 +48,14 @@ export function PostSettings({
   title, slug, setSlug, excerpt, setExcerpt, seoTitle, setSeoTitle, seoDesc, setSeoDesc, 
   featuredImage, setFeaturedImage,
   tags, setTags,
+  categories, selectedCategories, setSelectedCategories, onCreateCategory,
   onSave, saving
 }: PostSettingsProps) {
   
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [tagInput, setTagInput] = useState("");
+  const [newCatName, setNewCatName] = useState("");
+  const [creatingCat, setCreatingCat] = useState(false);
 
   // -- LOGIC: YouTube Style Tags --
   const handleTagKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -60,12 +73,27 @@ export function PostSettings({
     setTags(tags.filter(tag => tag !== tagToRemove));
   };
 
+  // -- LOGIC: Categories --
+  const toggleCategory = (catId: string) => {
+    if (selectedCategories.includes(catId)) {
+        setSelectedCategories(selectedCategories.filter(id => id !== catId));
+    } else {
+        setSelectedCategories([...selectedCategories, catId]);
+    }
+  };
+
+  const handleCreateCategory = async () => {
+    if (!newCatName.trim()) return;
+    setCreatingCat(true);
+    await onCreateCategory(newCatName.trim());
+    setNewCatName("");
+    setCreatingCat(false);
+  };
+
   // -- LOGIC: Intelligent SEO Fill --
   const handleAutoSEO = () => {
     if (!title) return;
     setSeoTitle(title);
-    // If we had the full content here, we could summarize it. 
-    // For now, we use the excerpt or a placeholder.
     setSeoDesc(excerpt || `Read more about ${title} on HeroZodiac.`);
   };
 
@@ -88,7 +116,7 @@ export function PostSettings({
         <div className="p-6 bg-white border-b border-slate-200">
           <SheetHeader>
             <SheetTitle className="text-2xl font-bold text-maroon-900 font-serif">Post Settings</SheetTitle>
-            <SheetDescription>Configure metadata, tags, and media.</SheetDescription>
+            <SheetDescription>Configure metadata, categories, tags, and media.</SheetDescription>
           </SheetHeader>
         </div>
 
@@ -113,7 +141,48 @@ export function PostSettings({
                 </AccordionContent>
             </AccordionItem>
 
-            {/* 2. TAGS (NEW FEATURES) */}
+            {/* 2. CATEGORIES (NEW) */}
+            <AccordionItem value="categories" className="border border-slate-200 bg-white rounded-lg px-4 shadow-sm">
+              <AccordionTrigger className="hover:no-underline text-slate-700 font-semibold">
+                <div className="flex items-center gap-3"><Folder className="h-4 w-4 text-slate-400" /> Categories</div>
+              </AccordionTrigger>
+              <AccordionContent className="pt-2 pb-4">
+                <div className="space-y-3">
+                   {/* List */}
+                   <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-md p-2 bg-slate-50 space-y-1">
+                      {categories.map(cat => (
+                          <div key={cat.id} className="flex items-center gap-2 p-2 hover:bg-slate-100 rounded cursor-pointer" onClick={(e) => {
+                            e.preventDefault();
+                            toggleCategory(cat.id);
+                          }}>
+                             <Checkbox 
+                                id={`cat-${cat.id}`}
+                                checked={selectedCategories.includes(cat.id)}
+                                onCheckedChange={() => toggleCategory(cat.id)}
+                             />
+                             <Label htmlFor={`cat-${cat.id}`} className="text-sm text-slate-700 cursor-pointer pointer-events-none">{cat.name}</Label>
+                          </div>
+                      ))}
+                      {categories.length === 0 && <p className="text-xs text-slate-400 p-2">No categories yet.</p>}
+                   </div>
+
+                   {/* Add New */}
+                   <div className="flex gap-2">
+                      <Input 
+                        value={newCatName} 
+                        onChange={e => setNewCatName(e.target.value)} 
+                        placeholder="New Category Name" 
+                        className="h-8 text-sm"
+                      />
+                      <Button size="sm" variant="outline" onClick={handleCreateCategory} disabled={creatingCat || !newCatName}>
+                        {creatingCat ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                      </Button>
+                   </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+
+            {/* 3. TAGS */}
             <AccordionItem value="tags" className="border border-slate-200 bg-white rounded-lg px-4 shadow-sm">
               <AccordionTrigger className="hover:no-underline text-slate-700 font-semibold">
                 <div className="flex items-center gap-3"><Tag className="h-4 w-4 text-slate-400" /> Tags</div>
@@ -129,18 +198,17 @@ export function PostSettings({
                         ))}
                         <input 
                             className="bg-transparent border-none outline-none text-sm flex-1 min-w-[80px] placeholder:text-slate-400"
-                            placeholder={tags.length === 0 ? "Add tags (press Enter)..." : ""}
+                            placeholder={tags.length === 0 ? "Add tags..." : ""}
                             value={tagInput}
                             onChange={(e) => setTagInput(e.target.value)}
                             onKeyDown={handleTagKeyDown}
                         />
                     </div>
-                    <p className="text-[10px] text-slate-400">Separate tags with commas or the Enter key.</p>
                 </div>
               </AccordionContent>
             </AccordionItem>
 
-            {/* 3. MEDIA */}
+            {/* 4. MEDIA */}
             <AccordionItem value="media" className="border border-slate-200 bg-white rounded-lg px-4 shadow-sm">
               <AccordionTrigger className="hover:no-underline text-slate-700 font-semibold">
                  <div className="flex items-center gap-3"><MediaIcon className="h-4 w-4 text-slate-400" /> Featured Media</div>
@@ -172,7 +240,7 @@ export function PostSettings({
               </AccordionContent>
             </AccordionItem>
 
-            {/* 4. INTELLIGENT SEO */}
+            {/* 5. INTELLIGENT SEO */}
             <AccordionItem value="seo" className="border border-slate-200 bg-white rounded-lg px-4 shadow-sm">
                 <AccordionTrigger className="hover:no-underline text-slate-700 font-semibold">
                     <div className="flex items-center gap-3"><Globe className="h-4 w-4 text-slate-400" /> SEO & Social</div>

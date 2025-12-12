@@ -1,13 +1,16 @@
 'use client';
 
+// We still keep the Project ID constant for now
+const DEMO_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
+
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Loader2, Save, Send } from 'lucide-react';
 import Link from 'next/link';
-import { toast } from 'sonner'; // Ensure you have installed sonner
+import { toast } from 'sonner';
 import TiptapEditor from '@/components/editor/TiptapEditor';
-import { PostSettings } from '@/components/editor/PostSettings';
+import { PostSettings, CategoryOption } from '@/components/editor/PostSettings';
 import { useRouter } from 'next/navigation';
 import { MediaAsset } from '@/types/cms';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -15,9 +18,7 @@ import MediaLibrary from "@/components/media/MediaLibrary";
 import { Editor } from '@tiptap/react';
 import { SeoPreview } from '@/components/editor/SeoPreview';
 import { useUser } from '@/hooks/useUser';
-
-// We still keep the Project ID constant for now
-const DEMO_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
+import { ensureAuthor } from '@/app/auth/actions';
 
 export default function NewPostPage() {
   const { user, loading: userLoading } = useUser();
@@ -25,7 +26,8 @@ export default function NewPostPage() {
   const editorRef = useRef<Editor | null>(null);
 
   // -- STATE --
-  const [postId, setPostId] = useState<string | null>(null); // CRITICAL: Track ID after first save
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [postId, setPostId] = useState<string | null>(null);
   
   const [title, setTitle] = useState('');
   const [content, setContent] = useState<any>(null);
@@ -35,13 +37,40 @@ export default function NewPostPage() {
   const [seoDesc, setSeoDesc] = useState('');
   const [featuredImage, setFeaturedImage] = useState<MediaAsset | null>(null);
   const [tags, setTags] = useState<string[]>([]);
+  
+  // Category State
+  const [categories, setCategories] = useState<CategoryOption[]>([]);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
 
   const [saving, setSaving] = useState(false);
   const [isEditorMediaOpen, setIsEditorMediaOpen] = useState(false);
 
+  // Load Project & Categories on mount
+  useEffect(() => {
+    async function initData() {
+        // 1. Fetch Project
+        const { data: projData, error: projError } = await supabase.from('projects').select('id').limit(1).single();
+        
+        if (projData) {
+            setProjectId(projData.id);
+        } else {
+            console.error('No project found! Please create a project in Supabase.', projError);
+            toast.error('System Error: No valid Project found.');
+        }
+
+        // 2. Fetch Categories
+        const { data: catData, error: catError } = await supabase.from('categories').select('id, name');
+        if (catData) {
+            setCategories(catData);
+        } else if (catError) {
+            console.error("Error fetching categories:", catError);
+        }
+    }
+    initData();
+  }, []);
+
   // Auto-generate slug and seoTitle
   useEffect(() => {
-    // Only auto-generate if we haven't saved yet (to prevent overwriting manual edits)
     if (!postId && title) {
       if (!slug) setSlug(title.toLowerCase().replace(/ /g, '-').replace(/[^\w-]+/g, ''));
       if (!seoTitle) setSeoTitle(title);
@@ -50,21 +79,77 @@ export default function NewPostPage() {
 
   const handleEditorMediaSelect = (asset: MediaAsset) => {
     if (editorRef.current) {
-      editorRef.current.chain().focus().setImage({ src: asset.file_url, alt: asset.alt_text_default || asset.file_name }).run();
+      editorRef.current.chain().focus().setImage({ 
+        src: asset.file_url, 
+        alt: asset.alt_text || asset.title || asset.file_name,
+        title: asset.title
+      }).run();
+
+      if (asset.caption) {
+       editorRef.current.chain().focus().insertContent(`<p class="text-center text-sm text-gray-500 italic mt-2">${asset.caption}</p>`).run();
+      }
     }
     setIsEditorMediaOpen(false);
   };
 
+  const handleCreateCategory = async (name: string) => {
+    if (!projectId) {
+        toast.error("No Project ID found");
+        return;
+    }
+    
+    // 1. Create in DB
+    const catSlug = name.toLowerCase().replace(/ /g, '-').replace(/[^\w-]+/g, '');
+    const { data, error } = await supabase.from('categories').insert({
+        project_id: projectId,
+        name,
+        slug: catSlug
+    }).select().single();
+
+    if (error) {
+        console.error("Create category error:", error);
+        toast.error("Failed to create category");
+        return;
+    }
+
+    // 2. Update local state
+    if (data) {
+        setCategories([...categories, { id: data.id, name: data.name }]);
+        setSelectedCategories([...selectedCategories, data.id]);
+        toast.success(`Category "${name}" created!`);
+    }
+  };
+
+  // --- SAVE LOGIC (FIXED) ---
   async function savePost(status: 'draft' | 'published') {
     if (userLoading) return;
     if (!user) return toast.error('You must be logged in to save.');
+    if (!projectId) return toast.error('System Error: No Project ID loaded.');
     if (!title) return toast.error('Please enter a title');
     
     setSaving(true);
 
+    // 0. ENSURE AUTHOR EXISTS (CRITICAL FIX)
+    // We attempt to sync the author profile first.
+    const authorRes = await ensureAuthor({
+        id: user.id,
+        email: user.email!,
+        name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Admin',
+        avatar_url: user.user_metadata?.avatar_url
+    });
+
+    // FIX: If this fails, we MUST stop here.
+    if (!authorRes.success) {
+        console.error("Failed to sync author profile:", authorRes.error);
+        toast.error("Error: Could not verify author profile. Cannot save post.");
+        setSaving(false);
+        return; 
+    }
+
+    // Proceed only if author is confirmed
     const postData: any = {
-      project_id: DEMO_PROJECT_ID,
-      author_id: user.id, // Use Real User ID
+      project_id: projectId,
+      author_id: user.id, // This ID is now guaranteed to exist in the authors table
       title,
       slug,
       content,
@@ -83,8 +168,8 @@ export default function NewPostPage() {
     let error;
     let data;
 
+    // 1. UPSERT POST
     if (postId) {
-      // UPDATE EXISTING POST
       const res = await supabase
         .from('posts')
         .update(postData)
@@ -95,7 +180,6 @@ export default function NewPostPage() {
       error = res.error;
       data = res.data;
     } else {
-      // CREATE NEW POST
       const res = await supabase
         .from('posts')
         .insert(postData)
@@ -106,27 +190,66 @@ export default function NewPostPage() {
       data = res.data;
     }
 
+    if (error) {
+       console.error("Supabase Save Error:", error);
+       setSaving(false);
+       if (error.message.includes('unique constraint')) {
+         toast.error('This URL slug is already taken.');
+       } else if (error.message.includes('foreign key constraint')) {
+         toast.error('Database Error: Author or Project ID missing.');
+       } else {
+         toast.error('Error saving post: ' + error.message);
+       }
+       return;
+    }
+
+    // 2. HANDLE TAGS
+    const currentPostId = data.id;
+
+    // A. Upsert Tags individually to get IDs
+    const tagIds: string[] = [];
+    for (const tagName of tags) {
+        const tagSlug = tagName.toLowerCase().replace(/ /g, '-').replace(/[^\w-]+/g, '');
+        
+        // Try to find existing
+        let { data: existingTag } = await supabase.from('tags').select('id').eq('slug', tagSlug).single();
+        
+        if (!existingTag) {
+            // Create new
+            const { data: newTag } = await supabase.from('tags').insert({
+                project_id: projectId,
+                name: tagName,
+                slug: tagSlug
+            }).select('id').single();
+            if (newTag) existingTag = newTag;
+        }
+
+        if (existingTag) tagIds.push(existingTag.id);
+    }
+
+    // B. Sync Post <-> Tags
+    await supabase.from('post_tags').delete().eq('post_id', currentPostId);
+    if (tagIds.length > 0) {
+        const ptRows = tagIds.map(tid => ({ post_id: currentPostId, tag_id: tid }));
+        await supabase.from('post_tags').insert(ptRows);
+    }
+
+    // 3. HANDLE CATEGORIES
+    await supabase.from('post_categories').delete().eq('post_id', currentPostId);
+    if (selectedCategories.length > 0) {
+        const pcRows = selectedCategories.map(cid => ({ post_id: currentPostId, category_id: cid }));
+        await supabase.from('post_categories').insert(pcRows);
+    }
+
     setSaving(false);
 
-    if (error) {
-      console.error(error);
-      // Handle specifically the unique slug error to give better feedback
-      if (error.message.includes('unique constraint')) {
-        toast.error('This URL slug is already taken. Please change it in Settings.');
-      } else {
-        toast.error('Error saving post: ' + error.message);
-      }
-    } else {
-      // If this was a new post, save the ID so future clicks update instead of create
-      if (data && !postId) {
-        setPostId(data.id);
-        // Optional: Update URL to edit URL without refreshing
-        window.history.replaceState(null, '', `/dashboard/posts/${data.id}`);
-      }
-      
-      const action = status === 'published' ? 'Published' : 'Saved';
-      toast.success(`Post ${action} Successfully!`);
+    if (data && !postId) {
+      setPostId(data.id);
+      window.history.replaceState(null, '', `/dashboard/posts/${data.id}`);
     }
+    
+    const action = status === 'published' ? 'Published' : 'Saved';
+    toast.success(`Post ${action} Successfully!`);
   }
 
   return (
@@ -153,6 +276,7 @@ export default function NewPostPage() {
             seoDesc={seoDesc} setSeoDesc={setSeoDesc}
             featuredImage={featuredImage} setFeaturedImage={setFeaturedImage}
             tags={tags} setTags={setTags}
+            categories={categories} selectedCategories={selectedCategories} setSelectedCategories={setSelectedCategories} onCreateCategory={handleCreateCategory}
             onSave={() => savePost('draft')}
             saving={saving}
           />
@@ -177,7 +301,7 @@ export default function NewPostPage() {
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Article Title Here..." 
-            className="w-full text-5xl font-black text-slate-900 placeholder:text-slate-200 border-none bg-transparent outline-none ring-0 p-0 font-serif leading-tight tracking-tight"
+            className="w-full text-3xl font-bold font-serif text-slate-900 placeholder:text-slate-400 border border-slate-300 rounded-lg px-4 py-3 bg-white focus:outline-none focus:ring-4 focus:ring-maroon-50 focus:border-maroon-600 transition-all shadow-sm"
             />
         </div>
 

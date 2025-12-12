@@ -33,6 +33,10 @@ export interface MediaAsset {
   height?: number;
   alt_text_default?: string;
   created_at: string;
+  alt_text?: string;
+  title?: string;
+  caption?: string;
+  description?: string;
 }
 
 // 4. POST (The Content)
@@ -51,6 +55,7 @@ export interface Post {
   // Relations (Expanded)
   featured_image?: MediaAsset; // For when we join tables
   tags?: Tag[];
+  categories?: Category[];
 
   // SEO Module
   seo_title: string | null;
@@ -63,6 +68,22 @@ export interface Post {
   status: 'draft' | 'published' | 'archived';
   published_at: string | null;
   updated_at: string;
+}
+
+// 5. TAG (The Taxonomy)
+export interface Tag {
+  id: string;
+  project_id: string;
+  name: string;
+  slug: string;
+  color: string | null;
+}
+
+// 6. CATEGORY
+export interface Category {
+  id: string;
+  name: string;
+  slug: string;
 }
 
 // 5. TAG (The Taxonomy)
